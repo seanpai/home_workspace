@@ -13,11 +13,14 @@
 #include <condition_variable>
 #include <WinSock2.h>
 
+#include "CommTest.h"
+
 using namespace std;
 
 //using FUNC_TYPE = int(const std::string&);
 
 static std::mutex g_mutex_Printout;
+const static std::string strMainBdIpAddr("192.168.1.128");
 
 void ThreadFunc(int& Aug)
 {
@@ -82,16 +85,64 @@ int ThreadSimSafeSpace()
 		return -1;
 	}
 
-	fd_set readFd;
+	fd_set readFd, tempFdList;
 	struct timeval sTimeout;
 	FD_ZERO(&readFd);
 	FD_SET(nListenChanl,&readFd);
 
-	sTimeout.tv_sec		= 1;
+	std::shared_ptr<char> RecvBuffer(new char[1024], [](char* ptr){ delete [] ptr;});
+	std::shared_ptr<char> RefBuffer(new char[1024], [](char* ptr){ delete [] ptr;});
 
-	int nRetValue = ::select(1, &readFd, NULL, NULL, &sTimeout);
+	CommTestFrame DataToSend;
+	::memset(&DataToSend, 0x00, sizeof(CommTestFrame));
+	
+	unsigned int nLoopCount = 0;
+
+	while(TRUE)
+	{
+		std::this_thread::sleep_for(std::chrono::milliseconds(1));
+		
+		DataToSend.StartFrame = htonl(STARTFRAME);
+		DataToSend.EndFrame = htonl(ENDFRAME);
+		DataToSend.nCounter = htonl(nLoopCount);
+
+		// Send test-data to main B/D
 
 
+		sTimeout.tv_sec = 0;
+		sTimeout.tv_usec = 0;
+		tempFdList = readFd;
+		int nRetValue = ::select(nListenChanl+1, &tempFdList, NULL, NULL, &sTimeout);
+		if(0 < nRetValue)
+		{
+			for(unsigned int nIndex = 0; nIndex < readFd.fd_count; nIndex++)
+			{
+				if(FD_ISSET(readFd.fd_array[nIndex], &tempFdList))
+				{
+					if(readFd.fd_array[nIndex] == nListenChanl)	// Some data has been received
+					{
+						sockaddr_in AddrSender;
+						int nSockAddrSize = sizeof(sockaddr_in);
+						::recvfrom(nListenChanl, RecvBuffer.get(), 1024, 0, (struct sockaddr*)&AddrSender, &nSockAddrSize);
+					
+					}
+				}
+			}
+
+		}
+		else if(0 == nRetValue)
+		{
+			; // timeout
+		}
+		else
+		{
+			;
+		}
+
+
+	}
+
+	closesocket(nListenChanl);
 	WSACleanup();
 
 	return 0;
@@ -102,9 +153,7 @@ int main()
 	int a = 0;
 	//std::thread ThreadInstance(ThreadFunc, std::ref(a));
 	std::string strMessage("thread is running");
-
 	std::packaged_task<int(const std::string&)> task(ThreadGetUserInput);
-	
 	std::future<int> RetValue = task.get_future();
 
 	std::thread ThreadInstance2(std::move(task), std::ref(strMessage));
