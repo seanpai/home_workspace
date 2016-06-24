@@ -79,11 +79,13 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\src\EtherInterface.cpp" />
     <ClCompile Include="..\..\src\SimSafeSpace.cpp" />
     <ClCompile Include="..\..\src\stdafx.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\src\CommTest.h" />
+    <ClInclude Include="..\..\src\EtherInterface.h" />
     <ClInclude Include="..\..\src\stdafx.h" />
     <ClInclude Include="..\..\src\targetver.h" />
   </ItemGroup>

@@ -14,12 +14,13 @@
 #include <WinSock2.h>
 
 #include "CommTest.h"
+#include "EtherInterface.h"
 
 using namespace std;
 
 //using FUNC_TYPE = int(const std::string&);
 
-static std::mutex g_mutex_Printout;
+std::mutex g_mutex_Printout;
 static std::mutex g_mutex_UserTerminate;
 static bool g_bTerminate = false;
 
@@ -61,12 +62,10 @@ int ThreadCount(const std::string& strAug)
 	return 1;
 }
 
-int ThreadSimSafeSpace()
+int ThreadSimSafeSpace(int nListenChanl)
 {
 
-	int nListenChanl = 0;
-	sockaddr_in AddrClient, AddrMainBd;
-
+	sockaddr_in AddrMainBd;
 	nListenChanl = ::socket(PF_INET, SOCK_DGRAM, 0);
 	if(INVALID_SOCKET == nListenChanl)
 	{
@@ -75,28 +74,9 @@ int ThreadSimSafeSpace()
 		return -1;
 	}
 
-	AddrClient.sin_family = AF_INET;
-	AddrClient.sin_addr.S_un.S_addr = inet_addr("192.168.1.48");
-	AddrClient.sin_port = htons(5001);
-
 	AddrMainBd.sin_family = AF_INET;
 	AddrMainBd.sin_addr.S_un.S_addr = inet_addr("192.168.1.128");
 	AddrMainBd.sin_port = htons(5001);
-
-	if(SOCKET_ERROR == ::bind(nListenChanl, (sockaddr*)&AddrClient, sizeof(sockaddr_in)))
-	{
-		std::lock_guard<std::mutex> Lock(g_mutex_Printout);
-		cout<<"socket() error"<<endl;
-		return -1;
-	}
-
-	fd_set readFd, tempFdList;
-	struct timeval sTimeout;
-	FD_ZERO(&readFd);
-	FD_SET(nListenChanl,&readFd);
-
-	std::shared_ptr<char> RecvBuffer(new char[1024], [](char* ptr){ delete [] ptr;});
-	std::shared_ptr<char> RefBuffer(new char[1024], [](char* ptr){ delete [] ptr;});
 
 	CommTestFrame DataToSend;
 	::memset(&DataToSend, 0x00, sizeof(CommTestFrame));
@@ -120,22 +100,52 @@ int ThreadSimSafeSpace()
 		{
 			cout<<"[ThreadSimSafeSpace] fail to sendto"<<endl;
 		}
+
+		{
+			std::unique_lock<std::mutex> lock(g_mutex_UserTerminate);
+			bool bRetValue = g_condition_UserTerminate.wait_for(lock, std::chrono::microseconds(0), [](){ return (true==g_bTerminate);});
+			if(true == bRetValue)
+			{
+				cout<<"[ThreadSimSpaceReceiver] this loop ends"<<endl;
+				break;
+			}
+		}
 		
+	}
+
+	return 0;
+}
+
+int ThreadSimSpaceReceiver(int nListenSocket)
+{
+	if(INVALID_SOCKET == nListenSocket)
+		return -1;
+
+	fd_set readFd, tempFdList;
+	struct timeval sTimeout;
+	FD_ZERO(&readFd);
+	FD_SET(nListenSocket,&readFd);
+
+	std::shared_ptr<char> RecvBuffer(new char[1024], [](char* ptr){ delete [] ptr;});
+	uint32_t nPrevCounter = 0;
+
+	while(TRUE)
+	{
 		sTimeout.tv_sec = 0;
-		sTimeout.tv_usec = 0;
+		sTimeout.tv_usec = 1000;
 		tempFdList = readFd;
-		int nRetValue = ::select(nListenChanl+1, &tempFdList, NULL, NULL, &sTimeout);
+		int nRetValue = ::select(nListenSocket+1, &tempFdList, NULL, NULL, &sTimeout);
 		if(0 < nRetValue)
 		{
 			for(unsigned int nIndex = 0; nIndex < readFd.fd_count; nIndex++)
 			{
 				if(FD_ISSET(readFd.fd_array[nIndex], &tempFdList))
 				{
-					if(readFd.fd_array[nIndex] == nListenChanl)	// Some data has been received
+					if(readFd.fd_array[nIndex] == nListenSocket)	// Some data has been received
 					{
 						sockaddr_in AddrSender;
 						int nSockAddrSize = sizeof(sockaddr_in);
-						int nRecvByte = ::recvfrom(nListenChanl, RecvBuffer.get(), 1024, 0, (struct sockaddr*)&AddrSender, &nSockAddrSize);	
+						int nRecvByte = ::recvfrom(nListenSocket, RecvBuffer.get(), 1024, 0, (struct sockaddr*)&AddrSender, &nSockAddrSize);	
 						//cout<<"[ThreadSimSafeSpace] RecvByte: "<<nRecvByte<<endl;
 
 						CommTestFrame RecvDataFrame;
@@ -143,7 +153,7 @@ int ThreadSimSafeSpace()
 						uint32_t nCurrCounter = ntohl(RecvDataFrame.nCounter);
 						if(nCurrCounter != nPrevCounter + 1)
 						{
-							cout<<"[ThreadSimSafeSpace] Counter didn't match, CurrCounter: "<<nCurrCounter<<", PrevCounter: "<<nPrevCounter<<endl;
+							cout<<"[ThreadSimSpaceReceiver] Counter didn't match, CurrCounter: "<<nCurrCounter<<", PrevCounter: "<<nPrevCounter<<endl;
 						}
 
 						nPrevCounter = nCurrCounter;
@@ -163,17 +173,13 @@ int ThreadSimSafeSpace()
 		{
 			std::unique_lock<std::mutex> lock(g_mutex_UserTerminate);
 			bool bRetValue = g_condition_UserTerminate.wait_for(lock, std::chrono::microseconds(0), [](){ return (true==g_bTerminate);});
-			//bool bRetValue = g_bTerminate;
 			if(true == bRetValue)
 			{
-				cout<<"[ThreadSimSafeSpace] this loop ends"<<endl;
+				cout<<"[ThreadSimSpaceReceiver] this loop ends"<<endl;
 				break;
 			}
 		}
-
 	}
-	closesocket(nListenChanl);
-
 	return 0;
 }
 
@@ -188,11 +194,24 @@ int main()
 		return nRetValue;
 	}
 
-	std::packaged_task<int()> TaskInterface(ThreadSimSafeSpace);
-	std::future<int> futureThreadInterface = TaskInterface.get_future();
-	std::thread ThreadInterface(std::move(TaskInterface));
-	ThreadInterface.detach();
-	
+	int nClientSocket = 0;
+
+	string strIpAddr("192.168.1.48");
+	std::shared_ptr<ETHER_INTERFACE> EthInterface = ETHER_INTERFACE::CreateEtherInterface(std::ref(strIpAddr), 5001);
+
+	// sender thread
+	std::packaged_task<int(int)> TaskSender(ThreadSimSafeSpace);
+	std::future<int> futureThreadSender = TaskSender.get_future();
+	std::thread ThreadSender(std::move(TaskSender), EthInterface->GetSocketHandle());
+	ThreadSender.detach();
+
+	// receiver thread
+	std::packaged_task<int(int)> TaskReceiver(ThreadSimSpaceReceiver);
+	std::future<int> futureThreadReceiver = TaskReceiver.get_future();
+	std::thread ThreadReceiver(std::move(TaskReceiver), EthInterface->GetSocketHandle());
+	ThreadReceiver.detach();
+
+	// Timer thread
 	std::string strMessage("ThreadCount is running");
 	std::packaged_task<int(const std::string&)> TaskCount(ThreadCount);
 	std::future<int> futureTaskCount = TaskCount.get_future();
@@ -201,7 +220,8 @@ int main()
 
 	int nValue = 0;
 	nValue = futureTaskCount.get();
-	nValue = futureThreadInterface.get();
+	nValue = futureThreadSender.get();
+	nValue = futureThreadReceiver.get();
 
 	std::cout << "[main] terminated" << std::endl;
 	WSACleanup();
