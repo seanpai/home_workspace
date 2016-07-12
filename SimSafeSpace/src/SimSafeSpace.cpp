@@ -12,7 +12,8 @@
 #include <mutex>
 #include <condition_variable>
 #include <WinSock2.h>
-
+#include <boost/thread/thread.hpp>
+#include <boost/shared_ptr.hpp>
 #include "CommTest.h"
 #include "EtherInterface.h"
 
@@ -49,7 +50,7 @@ int ThreadCount(const std::string& strAug)
 		std::this_thread::sleep_for(std::chrono::seconds(1));
 		nLoopCount++;
 		cout<<"[ThreadCount] loop count :"<<nLoopCount<<endl;
-		if(10 == nLoopCount)
+		if(5 == nLoopCount)
 		{
 			cout<<"[ThreadCount] this loop ends"<<endl;
 			break;
@@ -60,6 +61,44 @@ int ThreadCount(const std::string& strAug)
 	g_condition_UserTerminate.notify_all();
 
 	return 1;
+}
+
+class TESTCLASS
+{
+public:
+	explicit TESTCLASS(int32_t nValue) : m_nValue(nValue)
+	{};
+	int32_t TestFunction(int32_t nArg)
+	{
+		std::this_thread::sleep_for(std::chrono::seconds(2));
+		cout << "[TestFunction] member variable: "  << m_nValue <<endl;
+		cout << "[TestFunction] Argument: " << nArg << endl;
+		return nArg;
+	};
+	int32_t StartTask();
+private:
+	TESTCLASS(const TESTCLASS&);
+	TESTCLASS& operator=(const TESTCLASS&);
+	int32_t m_nValue;
+};
+
+int32_t TESTCLASS::StartTask()
+{
+	int32_t nValue = 1024;
+#ifdef _VS2012
+	std::future<int32_t> fut = std::async(std::launch::async, &TESTCLASS::TestFunction, this, nValue);
+	int32_t nRet = fut.get();
+#else
+	std::packaged_task<int32_t(TESTCLASS*, int32_t)> task(&TESTCLASS::TestFunction);
+	std::future<int32_t> fut = task.get_future();
+	std::thread workerThead(std::move(task), this, nValue);
+	workerThead.detach();
+	int32_t nRet = fut.get();
+#endif
+	cout << "[TESTCLASS::StartTask] ret :" << nRet << endl;
+	
+	return TRUE;
+
 }
 
 int ThreadSimSafeSpace(int nListenChanl)
@@ -183,6 +222,7 @@ int ThreadSimSpaceReceiver(int nListenSocket)
 	return 0;
 }
 
+#include "SmartPtr.h"
 int main()
 {
 	WSADATA wsaData;
@@ -199,29 +239,57 @@ int main()
 	string strIpAddr("192.168.1.48");
 	std::shared_ptr<ETHER_INTERFACE> EthInterface = ETHER_INTERFACE::CreateEtherInterface(std::ref(strIpAddr), 5001);
 
-	// sender thread
-	std::packaged_task<int(int)> TaskSender(ThreadSimSafeSpace);
-	std::future<int> futureThreadSender = TaskSender.get_future();
-	std::thread ThreadSender(std::move(TaskSender), EthInterface->GetSocketHandle());
-	ThreadSender.detach();
+	//using VEC_INT = std::vector<int>;
 
-	// receiver thread
-	std::packaged_task<int(int)> TaskReceiver(ThreadSimSpaceReceiver);
-	std::future<int> futureThreadReceiver = TaskReceiver.get_future();
-	std::thread ThreadReceiver(std::move(TaskReceiver), EthInterface->GetSocketHandle());
-	ThreadReceiver.detach();
+	//boost::shared_ptr<int> spTest(new int[1024], [](int* pData) 
+	//{	
+	//	cout << "spTest, deallocate" << endl;
+	//	delete[] pData; 
+	//});
+
+	{
+		SmartPtr<int> spLambda(new int[1024], [](int* pData)
+		{
+			cout << "spLambda, deallocate" << endl;
+			delete[] pData;
+		});
+
+		ArrayDeleter<int> deleter;
+		SmartPtr<int> spInt(new int[1024], deleter);
+		SmartPtr<char> spChar(new char[1024], (unsigned int)ARRAY_PTR);
+		//SmartPtr<char> spChar(new char[1024], static_cast<unsigned int>(ARRAY_PTR));
+		//SmartPtr<char> spChar(new char[1024], static_cast<unsigned int>(2));
+	}
+
+	//// sender thread
+	//std::packaged_task<int(int)> TaskSender(ThreadSimSafeSpace);
+	//std::future<int> futureThreadSender = TaskSender.get_future();
+	//std::thread ThreadSender(std::move(TaskSender), EthInterface->GetSocketHandle());
+	//ThreadSender.detach();
+
+	//// receiver thread
+	//std::packaged_task<int(int)> TaskReceiver(ThreadSimSpaceReceiver);
+	//std::future<int> futureThreadReceiver = TaskReceiver.get_future();
+	//std::thread ThreadReceiver(std::move(TaskReceiver), EthInterface->GetSocketHandle());
+	//ThreadReceiver.detach();
 
 	// Timer thread
-	std::string strMessage("ThreadCount is running");
-	std::packaged_task<int(const std::string&)> TaskCount(ThreadCount);
-	std::future<int> futureTaskCount = TaskCount.get_future();
-	std::thread ThreadCount(std::move(TaskCount),  std::ref(strMessage));
-	ThreadCount.detach();
+	//std::string strMessage("ThreadCount is running");
+	//std::packaged_task<int(const std::string&)> TaskCount(ThreadCount);
+	//std::future<int> futureTaskCount = TaskCount.get_future();
+	//std::thread ThreadCount(std::move(TaskCount),  std::ref(strMessage));
+	//ThreadCount.detach();
 
-	int nValue = 0;
-	nValue = futureTaskCount.get();
-	nValue = futureThreadSender.get();
-	nValue = futureThreadReceiver.get();
+	//boost::thread testThread([]() { cout << "hello, boost" << endl; });
+
+	TESTCLASS TestClass(255);
+
+	TestClass.StartTask();
+
+	//int nValue = 0;
+	//nValue = futureTaskCount.get();
+	//nValue = futureThreadSender.get();
+	//nValue = futureThreadReceiver.get();
 
 	std::cout << "[main] terminated" << std::endl;
 	WSACleanup();
