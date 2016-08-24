@@ -1,6 +1,20 @@
 #pragma once
 
+#ifdef _WINDOWS
 #include <WinSock2.h>
+#elif defined(__GNUC__)
+#include <sys/types.h>
+#include <netinet/in.h>
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#define INVALID_SOCKET (-1)
+#define SOCKET_ERROR (-1)
+#else
+
+#endif
+
+
+
 #include <memory>
 #include <string>
 
